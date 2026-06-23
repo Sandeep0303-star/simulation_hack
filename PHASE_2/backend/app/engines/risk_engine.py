@@ -205,6 +205,7 @@ class RiskEngine:
             if delay_component > 0
             else 0.0
         )
+
         if schedule_primary <= 0.0 and spillover_component > 0.0:
             schedule_primary = spillover_component
 
@@ -324,6 +325,12 @@ class RiskEngine:
         risk_components = []
         if schedule_primary > 0:
             risk_components.append(schedule_primary)
+            if spillover_component > 0.0 and delay_component > 0.0:
+                # Combine the forecast delay signal with a separate spillover-based
+                # schedule pressure signal when both are present. This prevents
+                # the schedule score from saturating prematurely at 100 for large
+                # delays while still reflecting additional spillover risk.
+                risk_components.append(spillover_component)
 
         if risk_components:
             schedule_score = sum(risk_components) / len(risk_components)

@@ -618,11 +618,15 @@ def test_schedule_risk_spillover_not_triple_weighted():
             min(100.0, (delay_days / 30.0) * 80.0) if delay_days > 0 else 0.0
         )
         confidence_modifier = 1.0 + (1.0 - mc.on_time_probability) * 0.20
-        return (
+        schedule_primary = (
             min(100.0, delay_component * confidence_modifier)
             if delay_component > 0
             else 0.0
         )
+        spillover_component = min(100.0, forecast.predicted_spillover_items * 8.0)
+        if schedule_primary > 0 and spillover_component > 0:
+            return (schedule_primary + spillover_component) / 2.0
+        return schedule_primary if schedule_primary > 0 else spillover_component
 
     assert abs(risk_high.schedule_risk.score - expected_schedule_score(forecast_high, monte_carlo_high)) < 0.01
     assert abs(risk_low.schedule_risk.score - expected_schedule_score(forecast_low, monte_carlo_low)) < 0.01

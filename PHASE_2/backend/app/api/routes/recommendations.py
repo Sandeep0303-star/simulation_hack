@@ -15,17 +15,31 @@ from app.api.models_phase3 import (
     RecommendationSimulationResponse,
     RecommendationSimulationResult,
     RecommendationSummary,
+    RecommendationType,
 )
+from app.engines.recommendations.models import RecommendationAction, ScoringWeights
 from app.engines.recommendations.recommendation_engine_v2 import RecommendationEngineV2
-from app.engines.recommendations.models import ScoringWeights
 
 router = APIRouter(prefix="/api", tags=["Phase3.4"])
+
+
+def _recommendation_type_from_action(action_type: RecommendationAction) -> RecommendationType:
+    return {
+        RecommendationAction.RESOLVE_BLOCKER: RecommendationType.RESOLVE_BLOCKER,
+        RecommendationAction.REASSIGN_ITEM: RecommendationType.REASSIGN_WORK,
+        RecommendationAction.SPLIT_ITEM: RecommendationType.SPLIT_TASK,
+        RecommendationAction.ADVANCE_ITEM_TO_EARLIER_SPRINT: RecommendationType.MOVE_BLOCKER_ITEMS,
+        RecommendationAction.PARALLELIZE_ITEMS: RecommendationType.PARALLELIZE_TASKS,
+        RecommendationAction.REBALANCE_SPRINT_LOAD: RecommendationType.REASSIGN_WORK,
+        RecommendationAction.REMOVE_DEPENDENCY_BOTTLENECK: RecommendationType.CRITICAL_PATH_OPTIMIZATION,
+        RecommendationAction.ADD_RESOURCE_SKILL: RecommendationType.ADD_RESOURCE,
+    }.get(action_type, RecommendationType.CRITICAL_PATH_OPTIMIZATION)
 
 
 def _recommendation_to_summary(rec) -> RecommendationSummary:
     return RecommendationSummary(
         recommendation_id=rec.recommendation_id,
-        type=rec.action_type.value,
+        type=_recommendation_type_from_action(rec.action_type),
         action=rec.title,
         target_ids=rec.affected_item_ids + rec.affected_resource_ids + rec.affected_sprint_ids + rec.affected_blocker_ids,
         details={
