@@ -19,7 +19,7 @@ from app.engines.forecast_engine import ForecastEngine
 from app.engines.monte_carlo_engine import MonteCarloEngine
 from app.engines.impact_scoring_engine import ImpactScoringEngine
 from app.engines.risk_engine import RiskEngine
-from app.api.models_phase3 import RiskLevel
+from app.api.models_phase3 import RiskLevel, RiskDriver, RiskExplanation
 
 
 @pytest.fixture
@@ -1285,6 +1285,595 @@ def test_risk_drivers_ranked(sample_project_state_high_risk):
     
     # Verify max 10 drivers
     assert len(result.top_risk_drivers) <= 10
+
+
+def test_cascade_depth_no_off_by_one():
+    """A three-item chain should report depth 2, not 3."""
+    start_date = datetime(2025, 1, 1)
+    project_info = ProjectInfo(
+        project_name="Cascade Depth Chain",
+        sponsor="Test Sponsor",
+        business_unit="Engineering",
+        project_manager="Test PM",
+        customer="Test Customer",
+        status="Active",
+        start_date=start_date,
+        target_end_date=start_date + timedelta(days=28),
+        sprint_duration_days=14,
+        methodology="Agile Scrum",
+    )
+
+    team = [
+        Resource(
+            resource_id="R1",
+            name="Alice",
+            role="Engineer",
+            primary_skill="Python",
+            secondary_skill="C++",
+            skill_level=SkillLevel.SENIOR,
+            allocation_pct=0.8,
+            availability_pct=1.0,
+        ),
+    ]
+
+    sprints = [
+        Sprint(
+            sprint_id="S1",
+            sprint_name="Sprint 1",
+            sprint_number=1,
+            start_date=start_date,
+            end_date=start_date + timedelta(days=14),
+            working_days=10,
+            sprint_goal="Dev",
+            status=SprintStatus.IN_PROGRESS,
+            planned_velocity_hrs=80.0,
+            carryover_count=0,
+        ),
+    ]
+
+    work_items = [
+        WorkItem(
+            item_id=f"WI-{letter}",
+            title=f"Task {letter}",
+            work_type=WorkItemType.TASK,
+            assigned_sprint="S1",
+            original_sprint="S1",
+            priority=Priority.MEDIUM,
+            status=WorkItemStatus.IN_PROGRESS,
+            estimated_effort_hrs=10.0,
+            current_estimate_hrs=10.0,
+            remaining_effort_hrs=10.0,
+            assigned_resource="R1",
+            required_skill="Python",
+        )
+        for letter in ["A", "B", "C"]
+    ]
+
+    dependencies = [
+        Dependency(
+            dependency_id="DEP-01",
+            predecessor_item_id="WI-A",
+            successor_item_id="WI-B",
+            lag_days=0,
+            dependency_type=DependencyType.FINISH_TO_START,
+        ),
+        Dependency(
+            dependency_id="DEP-02",
+            predecessor_item_id="WI-B",
+            successor_item_id="WI-C",
+            lag_days=0,
+            dependency_type=DependencyType.FINISH_TO_START,
+        ),
+    ]
+
+    blockers = [
+        Blocker(
+            blocker_id="B1",
+            related_item_id="WI-A",
+            impacted_item_ids=["WI-A"],
+            description="Root blocker",
+            severity=BlockerSeverity.CRITICAL,
+            status=BlockerStatus.OPEN,
+            owner="Ops",
+            raised_date=start_date,
+            target_resolution_date=start_date + timedelta(days=3),
+            actual_resolution_date=None,
+            category=BlockerCategory.OTHER,
+            notes="Test blocker",
+        )
+    ]
+
+    project_state = ProjectState(
+        project_id="proj-cascade-2",
+        project_info=project_info,
+        team=team,
+        sprints=sprints,
+        work_items=work_items,
+        dependencies=dependencies,
+        blockers=blockers,
+        actuals=[],
+    )
+
+    impact_scores = ImpactScoringEngine(project_state, DependencyGraphEngine(project_state).build_dag()).score()
+    assert max(impact_scores.cascade_depth_map.values()) == 2
+    assert impact_scores.cascade_depth_map["WI-C"] == 2
+
+
+def test_cascade_depth_zero_hops():
+    """A blocker with no successors should report depth 0."""
+    start_date = datetime(2025, 1, 1)
+    project_info = ProjectInfo(
+        project_name="Cascade Zero Hops",
+        sponsor="Test Sponsor",
+        business_unit="Engineering",
+        project_manager="Test PM",
+        customer="Test Customer",
+        status="Active",
+        start_date=start_date,
+        target_end_date=start_date + timedelta(days=14),
+        sprint_duration_days=14,
+        methodology="Agile Scrum",
+    )
+
+    team = [
+        Resource(
+            resource_id="R1",
+            name="Alice",
+            role="Engineer",
+            primary_skill="Python",
+            secondary_skill="C++",
+            skill_level=SkillLevel.SENIOR,
+            allocation_pct=0.8,
+            availability_pct=1.0,
+        ),
+    ]
+
+    sprints = [
+        Sprint(
+            sprint_id="S1",
+            sprint_name="Sprint 1",
+            sprint_number=1,
+            start_date=start_date,
+            end_date=start_date + timedelta(days=14),
+            working_days=10,
+            sprint_goal="Dev",
+            status=SprintStatus.IN_PROGRESS,
+            planned_velocity_hrs=80.0,
+            carryover_count=0,
+        ),
+    ]
+
+    work_items = [
+        WorkItem(
+            item_id="WI-A",
+            title="Task A",
+            work_type=WorkItemType.TASK,
+            assigned_sprint="S1",
+            original_sprint="S1",
+            priority=Priority.MEDIUM,
+            status=WorkItemStatus.IN_PROGRESS,
+            estimated_effort_hrs=10.0,
+            current_estimate_hrs=10.0,
+            remaining_effort_hrs=10.0,
+            assigned_resource="R1",
+            required_skill="Python",
+        ),
+    ]
+
+    blockers = [
+        Blocker(
+            blocker_id="B1",
+            related_item_id="WI-A",
+            impacted_item_ids=["WI-A"],
+            description="Isolated blocker",
+            severity=BlockerSeverity.CRITICAL,
+            status=BlockerStatus.OPEN,
+            owner="Ops",
+            raised_date=start_date,
+            target_resolution_date=start_date + timedelta(days=3),
+            actual_resolution_date=None,
+            category=BlockerCategory.OTHER,
+            notes="Test blocker",
+        )
+    ]
+
+    project_state = ProjectState(
+        project_id="proj-cascade-0",
+        project_info=project_info,
+        team=team,
+        sprints=sprints,
+        work_items=work_items,
+        dependencies=[],
+        blockers=blockers,
+        actuals=[],
+    )
+
+    impact_scores = ImpactScoringEngine(project_state, DependencyGraphEngine(project_state).build_dag()).score()
+    assert max(impact_scores.cascade_depth_map.values()) == 0
+    assert impact_scores.cascade_depth_map["WI-A"] == 0
+
+
+def test_cascade_threshold_not_triggered_at_real_depth_5():
+    """A real blocker depth of 5 should not trigger cascade risk."""
+    start_date = datetime(2025, 1, 1)
+    project_info = ProjectInfo(
+        project_name="Cascade Depth Five",
+        sponsor="Test Sponsor",
+        business_unit="Engineering",
+        project_manager="Test PM",
+        customer="Test Customer",
+        status="Active",
+        start_date=start_date,
+        target_end_date=start_date + timedelta(days=84),
+        sprint_duration_days=14,
+        methodology="Agile Scrum",
+    )
+
+    team = [
+        Resource(
+            resource_id="R1",
+            name="Alice",
+            role="Engineer",
+            primary_skill="Python",
+            secondary_skill="C++",
+            skill_level=SkillLevel.SENIOR,
+            allocation_pct=0.8,
+            availability_pct=1.0,
+        ),
+    ]
+
+    sprints = [
+        Sprint(
+            sprint_id="S1",
+            sprint_name="Sprint 1",
+            sprint_number=1,
+            start_date=start_date,
+            end_date=start_date + timedelta(days=14),
+            working_days=10,
+            sprint_goal="Dev",
+            status=SprintStatus.IN_PROGRESS,
+            planned_velocity_hrs=80.0,
+            carryover_count=0,
+        ),
+    ]
+
+    work_items = [
+        WorkItem(
+            item_id=f"WI-{i}",
+            title=f"Task {i}",
+            work_type=WorkItemType.TASK,
+            assigned_sprint="S1",
+            original_sprint="S1",
+            priority=Priority.MEDIUM,
+            status=WorkItemStatus.IN_PROGRESS,
+            estimated_effort_hrs=10.0,
+            current_estimate_hrs=10.0,
+            remaining_effort_hrs=10.0,
+            assigned_resource="R1",
+            required_skill="Python",
+        )
+        for i in range(1, 7)
+    ]
+
+    dependencies = [
+        Dependency(
+            dependency_id=f"DEP-{i:02d}",
+            predecessor_item_id=f"WI-{i}",
+            successor_item_id=f"WI-{i+1}",
+            lag_days=0,
+            dependency_type=DependencyType.FINISH_TO_START,
+        )
+        for i in range(1, 6)
+    ]
+
+    blockers = [
+        Blocker(
+            blocker_id="B1",
+            related_item_id="WI-1",
+            impacted_item_ids=["WI-1"],
+            description="Five-hop blocker",
+            severity=BlockerSeverity.CRITICAL,
+            status=BlockerStatus.OPEN,
+            owner="Ops",
+            raised_date=start_date,
+            target_resolution_date=start_date + timedelta(days=3),
+            actual_resolution_date=None,
+            category=BlockerCategory.OTHER,
+            notes="Test blocker",
+        )
+    ]
+
+    project_state = ProjectState(
+        project_id="proj-cascade-5",
+        project_info=project_info,
+        team=team,
+        sprints=sprints,
+        work_items=work_items,
+        dependencies=dependencies,
+        blockers=blockers,
+        actuals=[],
+    )
+
+    metrics = MetricsEngine(project_state).calculate()
+    dep_engine = DependencyGraphEngine(project_state)
+    dag = dep_engine.build_dag()
+    cp_result = CriticalPathEngine(project_state, dag).analyze()
+    spillover = SpilloverAnalysisEngine(project_state, metrics.average_item_effort).analyze()
+    forecast = ForecastEngine(project_state, metrics, cp_result, spillover).calculate()
+    monte_carlo = MonteCarloEngine(
+        project_state, metrics, cp_result, spillover, simulation_count=1000, seed=123
+    ).calculate()
+    impact_scores = ImpactScoringEngine(project_state, dag).score()
+    result = RiskEngine(
+        project_state, metrics, cp_result, dag, spillover, forecast, monte_carlo, impact_scores
+    ).analyze()
+
+    assert max(impact_scores.cascade_depth_map.values()) == 5
+    assert all(
+        driver.title != "Deep Blocker Cascade"
+        for driver in result.dependency_risk.drivers
+    )
+
+
+def test_cascade_threshold_triggered_at_real_depth_6():
+    """A real blocker depth of 6 should trigger cascade risk score 75."""
+    start_date = datetime(2025, 1, 1)
+    project_info = ProjectInfo(
+        project_name="Cascade Depth Six",
+        sponsor="Test Sponsor",
+        business_unit="Engineering",
+        project_manager="Test PM",
+        customer="Test Customer",
+        status="Active",
+        start_date=start_date,
+        target_end_date=start_date + timedelta(days=98),
+        sprint_duration_days=14,
+        methodology="Agile Scrum",
+    )
+
+    team = [
+        Resource(
+            resource_id="R1",
+            name="Alice",
+            role="Engineer",
+            primary_skill="Python",
+            secondary_skill="C++",
+            skill_level=SkillLevel.SENIOR,
+            allocation_pct=0.8,
+            availability_pct=1.0,
+        ),
+    ]
+
+    sprints = [
+        Sprint(
+            sprint_id="S1",
+            sprint_name="Sprint 1",
+            sprint_number=1,
+            start_date=start_date,
+            end_date=start_date + timedelta(days=14),
+            working_days=10,
+            sprint_goal="Dev",
+            status=SprintStatus.IN_PROGRESS,
+            planned_velocity_hrs=80.0,
+            carryover_count=0,
+        ),
+    ]
+
+    work_items = [
+        WorkItem(
+            item_id=f"WI-{i}",
+            title=f"Task {i}",
+            work_type=WorkItemType.TASK,
+            assigned_sprint="S1",
+            original_sprint="S1",
+            priority=Priority.MEDIUM,
+            status=WorkItemStatus.IN_PROGRESS,
+            estimated_effort_hrs=10.0,
+            current_estimate_hrs=10.0,
+            remaining_effort_hrs=10.0,
+            assigned_resource="R1",
+            required_skill="Python",
+        )
+        for i in range(1, 8)
+    ]
+
+    dependencies = [
+        Dependency(
+            dependency_id=f"DEP-{i:02d}",
+            predecessor_item_id=f"WI-{i}",
+            successor_item_id=f"WI-{i+1}",
+            lag_days=0,
+            dependency_type=DependencyType.FINISH_TO_START,
+        )
+        for i in range(1, 7)
+    ]
+
+    blockers = [
+        Blocker(
+            blocker_id="B1",
+            related_item_id="WI-1",
+            impacted_item_ids=["WI-1"],
+            description="Six-hop blocker",
+            severity=BlockerSeverity.CRITICAL,
+            status=BlockerStatus.OPEN,
+            owner="Ops",
+            raised_date=start_date,
+            target_resolution_date=start_date + timedelta(days=3),
+            actual_resolution_date=None,
+            category=BlockerCategory.OTHER,
+            notes="Test blocker",
+        )
+    ]
+
+    project_state = ProjectState(
+        project_id="proj-cascade-6",
+        project_info=project_info,
+        team=team,
+        sprints=sprints,
+        work_items=work_items,
+        dependencies=dependencies,
+        blockers=blockers,
+        actuals=[],
+    )
+
+    metrics = MetricsEngine(project_state).calculate()
+    dep_engine = DependencyGraphEngine(project_state)
+    dag = dep_engine.build_dag()
+    cp_result = CriticalPathEngine(project_state, dag).analyze()
+    spillover = SpilloverAnalysisEngine(project_state, metrics.average_item_effort).analyze()
+    forecast = ForecastEngine(project_state, metrics, cp_result, spillover).calculate()
+    monte_carlo = MonteCarloEngine(
+        project_state, metrics, cp_result, spillover, simulation_count=1000, seed=123
+    ).calculate()
+    impact_scores = ImpactScoringEngine(project_state, dag).score()
+    result = RiskEngine(
+        project_state, metrics, cp_result, dag, spillover, forecast, monte_carlo, impact_scores
+    ).analyze()
+
+    cascade_driver = next(
+        (driver for driver in result.dependency_risk.drivers if driver.title == "Deep Blocker Cascade"),
+        None,
+    )
+    assert cascade_driver is not None
+    assert cascade_driver.score == 75.0
+
+
+def test_schedule_driver_outranks_equal_dependency_driver(sample_project_state_low_risk):
+    """Schedule driver should rank above equal-scoring dependency driver."""
+    metrics = MetricsEngine(sample_project_state_low_risk).calculate()
+    dep_engine = DependencyGraphEngine(sample_project_state_low_risk)
+    dag = dep_engine.build_dag()
+    cp_result = CriticalPathEngine(sample_project_state_low_risk, dag).analyze()
+    spillover = SpilloverAnalysisEngine(sample_project_state_low_risk, metrics.average_item_effort).analyze()
+    forecast = ForecastEngine(sample_project_state_low_risk, metrics, cp_result, spillover).calculate()
+    monte_carlo = MonteCarloEngine(
+        sample_project_state_low_risk, metrics, cp_result, spillover, simulation_count=1000
+    ).calculate()
+    impact_scores = ImpactScoringEngine(sample_project_state_low_risk, dag).score()
+
+    class StubRiskEngine(RiskEngine):
+        def _calculate_schedule_risk(self):
+            return RiskExplanation(
+                score=80.0,
+                reasons=["Schedule driver stub"],
+                drivers=[
+                    RiskDriver(
+                        category="SCHEDULE",
+                        score=80.0,
+                        title="Schedule Pressure",
+                        description="Equal schedule risk.",
+                        recommendation_hint="Monitor schedule.",
+                    )
+                ],
+            )
+
+        def _calculate_dependency_risk(self):
+            return RiskExplanation(
+                score=80.0,
+                reasons=["Dependency driver stub"],
+                drivers=[
+                    RiskDriver(
+                        category="DEPENDENCY",
+                        score=80.0,
+                        title="Dependency Pressure",
+                        description="Equal dependency risk.",
+                        recommendation_hint="Monitor dependencies.",
+                    )
+                ],
+            )
+
+        def _calculate_resource_risk(self):
+            return RiskExplanation(score=0.0, reasons=[], drivers=[])
+
+        def _calculate_scope_risk(self):
+            return RiskExplanation(score=0.0, reasons=[], drivers=[])
+
+        def _calculate_sprint_risks(self):
+            return []
+
+    risk_engine = StubRiskEngine(
+        sample_project_state_low_risk,
+        metrics,
+        cp_result,
+        dag,
+        spillover,
+        forecast,
+        monte_carlo,
+        impact_scores,
+    )
+    result = risk_engine.analyze()
+
+    assert result.top_risk_drivers[0].category == "SCHEDULE"
+    assert result.top_risk_drivers[0].title == "Schedule Pressure"
+
+
+def test_high_dependency_can_outrank_low_schedule(sample_project_state_low_risk):
+    """High dependency score can outrank lower schedule score."""
+    metrics = MetricsEngine(sample_project_state_low_risk).calculate()
+    dep_engine = DependencyGraphEngine(sample_project_state_low_risk)
+    dag = dep_engine.build_dag()
+    cp_result = CriticalPathEngine(sample_project_state_low_risk, dag).analyze()
+    spillover = SpilloverAnalysisEngine(sample_project_state_low_risk, metrics.average_item_effort).analyze()
+    forecast = ForecastEngine(sample_project_state_low_risk, metrics, cp_result, spillover).calculate()
+    monte_carlo = MonteCarloEngine(
+        sample_project_state_low_risk, metrics, cp_result, spillover, simulation_count=1000
+    ).calculate()
+    impact_scores = ImpactScoringEngine(sample_project_state_low_risk, dag).score()
+
+    class StubRiskEngine(RiskEngine):
+        def _calculate_schedule_risk(self):
+            return RiskExplanation(
+                score=40.0,
+                reasons=["Low schedule driver stub"],
+                drivers=[
+                    RiskDriver(
+                        category="SCHEDULE",
+                        score=40.0,
+                        title="Schedule Pressure",
+                        description="Lower schedule risk.",
+                        recommendation_hint="Monitor schedule.",
+                    )
+                ],
+            )
+
+        def _calculate_dependency_risk(self):
+            return RiskExplanation(
+                score=90.0,
+                reasons=["High dependency driver stub"],
+                drivers=[
+                    RiskDriver(
+                        category="DEPENDENCY",
+                        score=90.0,
+                        title="Dependency Pressure",
+                        description="Higher dependency risk.",
+                        recommendation_hint="Monitor dependencies.",
+                    )
+                ],
+            )
+
+        def _calculate_resource_risk(self):
+            return RiskExplanation(score=0.0, reasons=[], drivers=[])
+
+        def _calculate_scope_risk(self):
+            return RiskExplanation(score=0.0, reasons=[], drivers=[])
+
+        def _calculate_sprint_risks(self):
+            return []
+
+    risk_engine = StubRiskEngine(
+        sample_project_state_low_risk,
+        metrics,
+        cp_result,
+        dag,
+        spillover,
+        forecast,
+        monte_carlo,
+        impact_scores,
+    )
+    result = risk_engine.analyze()
+
+    assert result.top_risk_drivers[0].category == "DEPENDENCY"
+    assert result.top_risk_drivers[0].title == "Dependency Pressure"
 
 
 def test_sprint_heatmap_generation(sample_project_state_high_risk):

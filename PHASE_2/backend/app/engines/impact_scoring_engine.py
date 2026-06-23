@@ -158,7 +158,8 @@ class ImpactScoringEngine:
                             all_impacted.add(succ)
                             next_queue.append(succ)
                 queue = next_queue
-                depth += 1
+                if queue:
+                    depth += 1
             
             blocker_cascade[blocker.blocker_id] = list(all_impacted)
             

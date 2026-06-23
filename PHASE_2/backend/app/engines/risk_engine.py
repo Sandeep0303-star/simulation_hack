@@ -108,10 +108,17 @@ class RiskEngine:
         all_drivers.extend(resource_risk_exp.drivers)
         all_drivers.extend(scope_risk_exp.drivers)
 
-        # Sort by score descending and take top 10, ignoring informational zero-score drivers
+        category_weights = {
+            "SCHEDULE": self.weights["schedule"],
+            "DEPENDENCY": self.weights["dependency"],
+            "RESOURCE": self.weights["resource"],
+            "SCOPE": self.weights["scope"],
+        }
+
+        # Sort by weighted contribution descending and take top 10, ignoring informational zero-score drivers
         top_drivers = sorted(
             (d for d in all_drivers if d.score > 0.0),
-            key=lambda d: d.score,
+            key=lambda d: d.score * category_weights.get(d.category, 1.0),
             reverse=True,
         )[:10]
 
