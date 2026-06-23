@@ -227,7 +227,9 @@ function ProjectSummaryCard({session}){
     daysElapsed = daysBetween(startDate, today)
   }
   let daysRemaining = null
-  if(targetDate){
+  if(forecast && forecast.delay_breakdown && typeof forecast.delay_breakdown.remaining_days_total === 'number'){
+    daysRemaining = forecast.delay_breakdown.remaining_days_total
+  }else if(targetDate){
     daysRemaining = daysBetween(today, targetDate)
   }
 
