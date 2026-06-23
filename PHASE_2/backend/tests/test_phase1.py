@@ -223,8 +223,52 @@ class TestWorkbookParser:
         explicit_value = parser._resolve_remaining_effort(12, 32.0, WorkItemStatus.NOT_STARTED)
         assert explicit_value == 12.0
 
-        explicit_str = parser._resolve_remaining_effort("  8  ", 32.0, WorkItemStatus.DONE)
+        explicit_str = parser._resolve_remaining_effort("  8  ", 32.0, WorkItemStatus.NOT_STARTED)
         assert explicit_str == 8.0
+
+    def test_resolve_remaining_effort_in_progress_blank_falls_back_to_estimate(self):
+        parser = WorkbookParser("/fake/path.xlsx")
+        assert parser._resolve_remaining_effort(None, 40.0, WorkItemStatus.IN_PROGRESS, progress_pct=0.0) == 40.0
+        assert parser._resolve_remaining_effort("", 40.0, WorkItemStatus.IN_PROGRESS, progress_pct=0.5) == 20.0
+
+    def test_resolve_remaining_effort_blocked_blank_falls_back_to_estimate(self):
+        parser = WorkbookParser("/fake/path.xlsx")
+        assert parser._resolve_remaining_effort(None, 30.0, WorkItemStatus.BLOCKED, progress_pct=0.0) == 30.0
+
+    def test_resolve_remaining_effort_completed_or_done_non_blank_ignores_remaining_value(self):
+        parser = WorkbookParser("/fake/path.xlsx")
+        assert parser._resolve_remaining_effort("10", 20.0, WorkItemStatus.COMPLETED) == 0.0
+        assert parser._resolve_remaining_effort("10", 20.0, WorkItemStatus.DONE) == 0.0
+
+    def test_resolve_remaining_effort_not_started_blank_defaults_to_current_for_empty_string(self):
+        parser = WorkbookParser("/fake/path.xlsx")
+        assert parser._resolve_remaining_effort("", 28.0, WorkItemStatus.NOT_STARTED) == 28.0
+
+    def test_resolve_remaining_effort_zero_string_returns_zero(self):
+        parser = WorkbookParser("/fake/path.xlsx")
+        assert parser._resolve_remaining_effort("0", 32.0, WorkItemStatus.IN_PROGRESS, progress_pct=0.0) == 0.0
+
+    def test_parse_progress_pct_converts_50_to_decimal(self):
+        parser = WorkbookParser("/fake/path.xlsx")
+        row = {"Progress %": 50}
+        assert parser._parse_progress_pct(row) == 0.5
+
+    def test_parse_progress_pct_accepts_decimal_values(self):
+        parser = WorkbookParser("/fake/path.xlsx")
+        row = {"Progress %": 0.25}
+        assert parser._parse_progress_pct(row) == 0.25
+
+    def test_parse_progress_pct_rejects_negative_values(self):
+        parser = WorkbookParser("/fake/path.xlsx")
+        row = {"Progress %": -5}
+        with pytest.raises(WorkbookParseError):
+            parser._parse_progress_pct(row)
+
+    def test_parse_progress_pct_rejects_values_over_100(self):
+        parser = WorkbookParser("/fake/path.xlsx")
+        row = {"Progress %": 150}
+        with pytest.raises(WorkbookParseError):
+            parser._parse_progress_pct(row)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

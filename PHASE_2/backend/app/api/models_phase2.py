@@ -35,7 +35,7 @@ class MetricsResponse(BaseModel):
     
     # Risk
     active_blocker_count: int
-    blocker_velocity_impact: float
+    blocker_velocity_impact: float  # Estimated fractional velocity reduction using complementary probability; range [0.0, 1.0), with diminishing returns across multiple active blockers.
     
     # Schedule
     current_sprint_number: int

@@ -264,6 +264,349 @@ class TestMetricsEngine:
         # With only 1 actual, variance should be 0
         assert metrics.velocity_variance == 0.0
 
+    def test_estimate_blocker_velocity_impact_single_blocker(self):
+        """A single blocker should have its base impact."""
+        blockers = [
+            Blocker(
+                blocker_id="BLK-SINGLE",
+                related_item_id="WI-001",
+                impacted_item_ids=["WI-001"],
+                description="Single critical blocker",
+                severity=BlockerSeverity.CRITICAL,
+                status=BlockerStatus.OPEN,
+                owner="Owner",
+                raised_date=datetime(2025, 1, 1),
+                target_resolution_date=datetime(2025, 1, 8),
+                category=BlockerCategory.OTHER,
+                notes="",
+            )
+        ]
+
+        impact = MetricsEngine._estimate_blocker_velocity_impact(blockers)
+        assert impact == 0.40
+
+    def test_estimate_blocker_velocity_impact_multiple_blockers_diminishing_returns(self):
+        """Multiple active blockers should increase impact with diminishing returns."""
+        blockers = [
+            Blocker(
+                blocker_id="BLK-1",
+                related_item_id="WI-001",
+                impacted_item_ids=["WI-001"],
+                description="Critical blocker",
+                severity=BlockerSeverity.CRITICAL,
+                status=BlockerStatus.OPEN,
+                owner="Owner",
+                raised_date=datetime(2025, 1, 1),
+                target_resolution_date=datetime(2025, 1, 8),
+                category=BlockerCategory.OTHER,
+                notes="",
+            ),
+            Blocker(
+                blocker_id="BLK-2",
+                related_item_id="WI-002",
+                impacted_item_ids=["WI-002"],
+                description="High blocker",
+                severity=BlockerSeverity.HIGH,
+                status=BlockerStatus.OPEN,
+                owner="Owner",
+                raised_date=datetime(2025, 1, 1),
+                target_resolution_date=datetime(2025, 1, 8),
+                category=BlockerCategory.OTHER,
+                notes="",
+            ),
+        ]
+
+        impact_first = MetricsEngine._estimate_blocker_velocity_impact([blockers[0]])
+        impact_second = MetricsEngine._estimate_blocker_velocity_impact(blockers)
+
+        assert impact_second > impact_first
+        assert impact_first == 0.40
+        assert impact_second == pytest.approx(0.52, rel=1e-6)
+
+    def test_zero_blockers(self):
+        """No blockers should produce zero impact."""
+        impact = MetricsEngine._estimate_blocker_velocity_impact([])
+        assert impact == 0.0
+
+    def test_single_critical(self):
+        """Single critical blocker should match its base weight."""
+        impact = MetricsEngine._estimate_blocker_velocity_impact([
+            Blocker(
+                blocker_id="BLK-CRIT",
+                related_item_id="WI-001",
+                impacted_item_ids=["WI-001"],
+                description="Critical blocker",
+                severity=BlockerSeverity.CRITICAL,
+                status=BlockerStatus.OPEN,
+                owner="Owner",
+                raised_date=datetime(2025, 1, 1),
+                target_resolution_date=datetime(2025, 1, 8),
+                category=BlockerCategory.OTHER,
+                notes="",
+            )
+        ])
+        assert impact == pytest.approx(0.40, rel=1e-6)
+
+    def test_single_high(self):
+        """Single high blocker should match its base weight."""
+        impact = MetricsEngine._estimate_blocker_velocity_impact([
+            Blocker(
+                blocker_id="BLK-HIGH",
+                related_item_id="WI-001",
+                impacted_item_ids=["WI-001"],
+                description="High blocker",
+                severity=BlockerSeverity.HIGH,
+                status=BlockerStatus.OPEN,
+                owner="Owner",
+                raised_date=datetime(2025, 1, 1),
+                target_resolution_date=datetime(2025, 1, 8),
+                category=BlockerCategory.OTHER,
+                notes="",
+            )
+        ])
+        assert impact == pytest.approx(0.20, rel=1e-6)
+
+    def test_single_medium(self):
+        """Single medium blocker should match its base weight."""
+        impact = MetricsEngine._estimate_blocker_velocity_impact([
+            Blocker(
+                blocker_id="BLK-MEDIUM",
+                related_item_id="WI-001",
+                impacted_item_ids=["WI-001"],
+                description="Medium blocker",
+                severity=BlockerSeverity.MEDIUM,
+                status=BlockerStatus.OPEN,
+                owner="Owner",
+                raised_date=datetime(2025, 1, 1),
+                target_resolution_date=datetime(2025, 1, 8),
+                category=BlockerCategory.OTHER,
+                notes="",
+            )
+        ])
+        assert impact == pytest.approx(0.10, rel=1e-6)
+
+    def test_single_low(self):
+        """Single low blocker should match its base weight."""
+        impact = MetricsEngine._estimate_blocker_velocity_impact([
+            Blocker(
+                blocker_id="BLK-LOW",
+                related_item_id="WI-001",
+                impacted_item_ids=["WI-001"],
+                description="Low blocker",
+                severity=BlockerSeverity.LOW,
+                status=BlockerStatus.OPEN,
+                owner="Owner",
+                raised_date=datetime(2025, 1, 1),
+                target_resolution_date=datetime(2025, 1, 8),
+                category=BlockerCategory.OTHER,
+                notes="",
+            )
+        ])
+        assert impact == pytest.approx(0.05, rel=1e-6)
+
+    def test_two_critical_blockers(self):
+        """Two critical blockers should show diminishing returns relative to additive."""
+        blockers = [
+            Blocker(
+                blocker_id=f"BLK-CRIT-{i}",
+                related_item_id="WI-001",
+                impacted_item_ids=["WI-001"],
+                description="Critical blocker",
+                severity=BlockerSeverity.CRITICAL,
+                status=BlockerStatus.OPEN,
+                owner="Owner",
+                raised_date=datetime(2025, 1, 1),
+                target_resolution_date=datetime(2025, 1, 8),
+                category=BlockerCategory.OTHER,
+                notes="",
+            )
+            for i in range(2)
+        ]
+        impact = MetricsEngine._estimate_blocker_velocity_impact(blockers)
+        assert impact == pytest.approx(1 - (0.6 * 0.6), rel=1e-6)
+        assert impact < 0.80
+
+    def test_adding_blocker_increases_impact(self):
+        """Adding an active blocker should always increase impact."""
+        baseline = [
+            Blocker(
+                blocker_id="BLK-1",
+                related_item_id="WI-001",
+                impacted_item_ids=["WI-001"],
+                description="Critical blocker",
+                severity=BlockerSeverity.CRITICAL,
+                status=BlockerStatus.OPEN,
+                owner="Owner",
+                raised_date=datetime(2025, 1, 1),
+                target_resolution_date=datetime(2025, 1, 8),
+                category=BlockerCategory.OTHER,
+                notes="",
+            )
+        ]
+        second = baseline + [
+            Blocker(
+                blocker_id="BLK-2",
+                related_item_id="WI-002",
+                impacted_item_ids=["WI-002"],
+                description="High blocker",
+                severity=BlockerSeverity.HIGH,
+                status=BlockerStatus.OPEN,
+                owner="Owner",
+                raised_date=datetime(2025, 1, 1),
+                target_resolution_date=datetime(2025, 1, 8),
+                category=BlockerCategory.OTHER,
+                notes="",
+            )
+        ]
+        third = second + [
+            Blocker(
+                blocker_id="BLK-3",
+                related_item_id="WI-003",
+                impacted_item_ids=["WI-003"],
+                description="Medium blocker",
+                severity=BlockerSeverity.MEDIUM,
+                status=BlockerStatus.OPEN,
+                owner="Owner",
+                raised_date=datetime(2025, 1, 1),
+                target_resolution_date=datetime(2025, 1, 8),
+                category=BlockerCategory.OTHER,
+                notes="",
+            )
+        ]
+
+        impact_baseline = MetricsEngine._estimate_blocker_velocity_impact(baseline)
+        impact_second = MetricsEngine._estimate_blocker_velocity_impact(second)
+        impact_third = MetricsEngine._estimate_blocker_velocity_impact(third)
+
+        assert impact_second > impact_baseline
+        assert impact_third > impact_second
+
+    def test_result_non_negative(self):
+        """Impact should never be negative."""
+        blockers = [
+            Blocker(
+                blocker_id=f"BLK-{i}",
+                related_item_id="WI-001",
+                impacted_item_ids=["WI-001"],
+                description="Critical blocker",
+                severity=BlockerSeverity.CRITICAL,
+                status=BlockerStatus.OPEN,
+                owner="Owner",
+                raised_date=datetime(2025, 1, 1),
+                target_resolution_date=datetime(2025, 1, 8),
+                category=BlockerCategory.OTHER,
+                notes="",
+            )
+            for i in range(50)
+        ]
+        impact = MetricsEngine._estimate_blocker_velocity_impact(blockers)
+        assert impact >= 0.0
+
+    def test_result_below_one(self):
+        """Impact should remain strictly below 1.0 for many blockers."""
+        blockers = [
+            Blocker(
+                blocker_id=f"BLK-{i}",
+                related_item_id="WI-001",
+                impacted_item_ids=["WI-001"],
+                description="High blocker",
+                severity=BlockerSeverity.HIGH,
+                status=BlockerStatus.OPEN,
+                owner="Owner",
+                raised_date=datetime(2025, 1, 1),
+                target_resolution_date=datetime(2025, 1, 8),
+                category=BlockerCategory.OTHER,
+                notes="",
+            )
+            for i in range(100)
+        ]
+        impact = MetricsEngine._estimate_blocker_velocity_impact(blockers)
+        assert impact < 1.0
+
+    def test_resolved_blocker_excluded(self):
+        """Resolved blockers must not contribute to impact."""
+        active = Blocker(
+            blocker_id="BLK-ACTIVE",
+            related_item_id="WI-001",
+            impacted_item_ids=["WI-001"],
+            description="Active high blocker",
+            severity=BlockerSeverity.HIGH,
+            status=BlockerStatus.OPEN,
+            owner="Owner",
+            raised_date=datetime(2025, 1, 1),
+            target_resolution_date=datetime(2025, 1, 8),
+            category=BlockerCategory.OTHER,
+            notes="",
+        )
+        resolved = Blocker(
+            blocker_id="BLK-RESOLVED",
+            related_item_id="WI-001",
+            impacted_item_ids=["WI-001"],
+            description="Resolved critical blocker",
+            severity=BlockerSeverity.CRITICAL,
+            status=BlockerStatus.RESOLVED,
+            owner="Owner",
+            raised_date=datetime(2025, 1, 1),
+            target_resolution_date=datetime(2025, 1, 8),
+            actual_resolution_date=datetime(2025, 1, 5),
+            category=BlockerCategory.OTHER,
+            notes="",
+        )
+        impact = MetricsEngine._estimate_blocker_velocity_impact([active, resolved])
+        assert impact == pytest.approx(0.20, rel=1e-6)
+
+    def test_unknown_severity_no_effect(self):
+        """Unknown severities should not break the calculation."""
+        active = Blocker(
+            blocker_id="BLK-ACTIVE",
+            related_item_id="WI-001",
+            impacted_item_ids=["WI-001"],
+            description="Active medium blocker",
+            severity=BlockerSeverity.MEDIUM,
+            status=BlockerStatus.OPEN,
+            owner="Owner",
+            raised_date=datetime(2025, 1, 1),
+            target_resolution_date=datetime(2025, 1, 8),
+            category=BlockerCategory.OTHER,
+            notes="",
+        )
+
+        class UnknownSeverityBlocker:
+            def __init__(self):
+                self.severity = "UNKNOWN"
+                self.actual_resolution_date = None
+
+        impact = MetricsEngine._estimate_blocker_velocity_impact([active, UnknownSeverityBlocker()])
+        assert impact == pytest.approx(0.10, rel=1e-6)
+
+    @pytest.mark.parametrize(
+        "severity,expected",
+        [
+            (BlockerSeverity.CRITICAL, 0.40),
+            (BlockerSeverity.HIGH, 0.20),
+            (BlockerSeverity.MEDIUM, 0.10),
+            (BlockerSeverity.LOW, 0.05),
+        ],
+    )
+    def test_single_blocker_equivalence(self, severity, expected):
+        """A single blocker impact should exactly equal its severity weight."""
+        impact = MetricsEngine._estimate_blocker_velocity_impact([
+            Blocker(
+                blocker_id="BLK-EQ",
+                related_item_id="WI-001",
+                impacted_item_ids=["WI-001"],
+                description="Single blocker",
+                severity=severity,
+                status=BlockerStatus.OPEN,
+                owner="Owner",
+                raised_date=datetime(2025, 1, 1),
+                target_resolution_date=datetime(2025, 1, 8),
+                category=BlockerCategory.OTHER,
+                notes="",
+            )
+        ])
+        assert impact == pytest.approx(expected, rel=1e-6)
+
 
 class TestDependencyGraphEngine:
     """Tests for DependencyGraphEngine."""

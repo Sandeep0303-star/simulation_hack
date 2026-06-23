@@ -270,6 +270,9 @@ class WorkbookParser:
             
             item_id = self._get_str(row, "Task ID")
             
+            progress_pct = self._parse_progress_pct(row)
+            current_estimate = self._get_float_safe(row, "Curr Est (h)")
+
             work_items.append(WorkItem(
                 item_id=item_id,
                 title=self._get_str(row, "Task Name"),
@@ -282,14 +285,15 @@ class WorkbookParser:
                 required_skill=self._get_str(row, "Required Skill"),
                 priority=self._parse_priority(row),
                 estimated_effort_hrs=self._get_float_safe(row, "Orig Est (h)"),
-                current_estimate_hrs=self._get_float_safe(row, "Curr Est (h)"),
+                current_estimate_hrs=current_estimate,
                 actual_effort_hrs=self._get_float_safe(row, "Actual Hrs"),
+                progress_pct=progress_pct,
                 remaining_effort_hrs=self._resolve_remaining_effort(
                     row.get("Remaining Hrs"),
-                    self._get_float_safe(row, "Curr Est (h)"),
+                    current_estimate,
                     self._parse_work_item_status(row),
+                    progress_pct=progress_pct,
                 ),
-                progress_pct=self._get_float_safe(row, "Progress %"),
                 status=self._parse_work_item_status(row),
                 is_scope_changed=self._parse_yes_no(self._get_optional_str(row, "Scope Change")),
                 scope_change_reason=self._get_optional_str(row, "Scope Reason"),
@@ -302,8 +306,12 @@ class WorkbookParser:
         remaining_value: Any,
         current_estimate: float,
         status: WorkItemStatus,
+        progress_pct: float = 0.0,
     ) -> float:
-        """Resolve remaining effort based on status and workbook value."""
+        """Resolve remaining effort based on status, workbook value, and progress."""
+        if status in {WorkItemStatus.DONE, WorkItemStatus.COMPLETED}:
+            return 0.0
+
         if remaining_value is not None:
             if isinstance(remaining_value, str) and remaining_value.strip() == "":
                 remaining_value = None
@@ -313,13 +321,13 @@ class WorkbookParser:
                 except (ValueError, TypeError):
                     return 0.0
 
-        if status in {WorkItemStatus.DONE, WorkItemStatus.COMPLETED}:
-            return 0.0
-
         if status == WorkItemStatus.NOT_STARTED:
             return current_estimate
 
-        return 0.0
+        if progress_pct > 0.0:
+            return max(0.0, current_estimate * (1.0 - progress_pct))
+
+        return current_estimate
 
     def _parse_dependencies(self) -> List[Dependency]:
         """Parse Dependencies sheet (multiple rows)."""
@@ -445,7 +453,29 @@ class WorkbookParser:
             return float(value)
         except (ValueError, TypeError):
             return 0.0
-    
+
+    def _parse_progress_pct(self, row: Dict) -> float:
+        """Parse Progress % as a decimal between 0.0 and 1.0."""
+        value = row.get("Progress %")
+        if value is None:
+            return 0.0
+        if isinstance(value, str) and value.startswith("="):
+            return 0.0
+        try:
+            progress_value = float(value)
+        except (ValueError, TypeError):
+            raise WorkbookParseError(f"Invalid float for field Progress %: {value}")
+
+        if progress_value < 0.0 or progress_value > 100.0:
+            raise WorkbookParseError(
+                f"Invalid Progress % value: {progress_value}. Expected 0-100 or 0.0-1.0."
+            )
+
+        if progress_value > 1.0:
+            progress_value /= 100.0
+
+        return min(max(progress_value, 0.0), 1.0)
+
     def _get_datetime(self, row: Dict, key: str) -> datetime:
         """Get required datetime value from row."""
         value = row.get(key)
