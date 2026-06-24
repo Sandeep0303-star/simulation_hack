@@ -356,11 +356,15 @@ class WorkbookParser:
             impacted_str = self._get_str(row, "Impacted Task IDs")
             impacted_ids = [x.strip() for x in impacted_str.split(",")]
             
-            # Use notes as description if available, otherwise construct from other fields
-            description = self._get_optional_str(row, "Notes")
-            if not description:
-                description = f"Blocker {self._get_str(row, 'Blocker ID')}: {self._get_str(row, 'Related Task')}"
-            
+            # Use notes as description if available, otherwise construct from other fields.
+            # The Blockers sheet uses "Notes / Escalation Path" as the column header;
+            # fall back to plain "Notes" for workbooks that use the shorter variant.
+            notes_text = (
+                self._get_optional_str(row, "Notes / Escalation Path")
+                or self._get_optional_str(row, "Notes")
+            )
+            description = notes_text or f"Blocker {self._get_str(row, 'Blocker ID')}: {self._get_str(row, 'Related Task')}"
+
             blockers.append(Blocker(
                 blocker_id=self._get_str(row, "Blocker ID"),
                 related_item_id=self._get_str(row, "Related Task"),
@@ -373,7 +377,7 @@ class WorkbookParser:
                 target_resolution_date=self._get_optional_datetime(row, "Target Resolution"),
                 actual_resolution_date=self._get_optional_datetime(row, "Actual Resolution"),
                 category=parse_blocker_category(row.get("Category")),
-                notes=self._get_optional_str(row, "Notes"),
+                notes=notes_text,
             ))
         
         return blockers

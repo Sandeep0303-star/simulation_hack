@@ -199,8 +199,8 @@ class MetricsEngine:
     def _estimate_blocker_velocity_impact(blockers) -> float:
         """Estimate velocity impact from active blockers (0.0-1.0)."""
         impact_map = {
-            BlockerSeverity.CRITICAL: 0.40,
-            BlockerSeverity.HIGH: 0.20,
+            BlockerSeverity.CRITICAL: 0.20,
+            BlockerSeverity.HIGH: 0.15,
             BlockerSeverity.MEDIUM: 0.10,
             BlockerSeverity.LOW: 0.05,
         }

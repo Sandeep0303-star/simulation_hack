@@ -191,12 +191,16 @@ class SimulationEngineV2:
             on_time_probability=self.baseline.monte_carlo.on_time_probability,
             expected_delay_days=self.baseline.forecast.expected_delay_days,
             overall_risk_score=self.baseline.risk_result.overall_risk_score,
+            schedule_risk=self.baseline.risk_result.schedule_risk.score,
+            resource_risk=self.baseline.risk_result.resource_risk.score,
             critical_path_hours=self.baseline.cp_result.critical_path_duration_hours,
         )
         simulated_metrics = SimulatedMetrics(
             on_time_probability=simulated.monte_carlo.on_time_probability,
             expected_delay_days=simulated.forecast.expected_delay_days,
             overall_risk_score=simulated.risk_result.overall_risk_score,
+            schedule_risk=simulated.risk_result.schedule_risk.score,
+            resource_risk=simulated.risk_result.resource_risk.score,
             critical_path_hours=simulated.cp_result.critical_path_duration_hours,
         )
         delta_on_time_probability = simulated_metrics.on_time_probability - baseline_metrics.on_time_probability

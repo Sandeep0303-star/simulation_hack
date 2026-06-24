@@ -76,5 +76,27 @@ def test_candidate_generator_respects_v2_contract():
     for candidate in candidates:
         if candidate.affected_resource_ids:
             assert "target_resource_id" in candidate.simulation_params
-        assert re.search(r"\([^)]+\)$", candidate.title)
+        assert candidate.title
+        if candidate.action_type == RecommendationAction.RESOLVE_BLOCKER:
+            assert any(blocker_id in candidate.title for blocker_id in candidate.affected_blocker_ids)
+        else:
+            assert re.search(r"\([^)]+\)$", candidate.title)
         assert candidate.feasibility_checks == {} or all(candidate.feasibility_checks.values())
+
+
+def test_blocker_candidate_uses_blocker_context():
+    project_state = make_recommendation_project_state()
+    upstream = build_upstream(project_state)
+    signals = BlockerDetector(project_state, upstream.cp_result, upstream.dag, upstream.impact_scores).detect()
+    candidates = CandidateGenerator(project_state, upstream).generate(signals)
+
+    blocker_candidates = [
+        c for c in candidates if c.action_type == RecommendationAction.RESOLVE_BLOCKER
+    ]
+    assert blocker_candidates
+    blocker_candidate = blocker_candidates[0]
+
+    assert "BLK-01" in blocker_candidate.title
+    assert "Environment issue blocking Python API deployment" in blocker_candidate.description
+    assert "Owner: DevOps" in blocker_candidate.description
+    assert "WI-02" in blocker_candidate.description

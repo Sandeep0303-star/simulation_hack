@@ -44,10 +44,33 @@ class CandidateGenerator:
         blocker_ids = signal.affected_blocker_ids or []
         if blocker_ids:
             blocker_id = blocker_ids[0]
+
+            # Look up actual blocker from project state for rich, actionable context
+            blocker = next(
+                (b for b in self.project_state.blockers if b.blocker_id == blocker_id),
+                None,
+            )
+            category = blocker.category.value if blocker else "Unknown"
+            owner = (blocker.owner or "Unassigned") if blocker else "Unassigned"
+            impacted = signal.affected_item_ids
+            impacted_summary = ", ".join(impacted[:3]) + (f" (+{len(impacted) - 3} more)" if len(impacted) > 3 else "")
+
+            # Title: short, actionable, shown on the card
+            title = f"Resolve {category} blocker — {blocker_id} (Owner: {owner})"
+
+            # Description: truncated escalation notes + impacted items
+            raw_notes = (blocker.description or "") if blocker else ""
+            short_notes = (raw_notes[:200] + "…") if len(raw_notes) > 200 else raw_notes
+            description = (
+                f"{short_notes} | Blocking {len(impacted)} item(s): {impacted_summary}"
+                if short_notes
+                else f"{blocker_id} is blocking {len(impacted)} item(s): {impacted_summary}"
+            )
+
             candidates.append(self._build_candidate(
                 action_type=RecommendationAction.RESOLVE_BLOCKER,
-                title=f"Resolve blocker ({blocker_id})",
-                description=f"Resolve active blocker {blocker_id}",
+                title=title,
+                description=description,
                 affected_item_ids=signal.affected_item_ids,
                 affected_resource_ids=[],
                 affected_sprint_ids=signal.affected_sprint_ids,
@@ -127,20 +150,57 @@ class CandidateGenerator:
 
     def _from_schedule_signal(self, signal: OpportunitySignal) -> List[RecommendationCandidate]:
         candidates: List[RecommendationCandidate] = []
-        if signal.affected_item_ids:
-            item_id = signal.affected_item_ids[0]
+        if not signal.affected_item_ids:
+            return candidates
+        
+        # Get the context flag to understand which type of schedule issue this is
+        flag = signal.context.get("flag", "SCHEDULE_GAP") if signal.context else "SCHEDULE_GAP"
+        schedule_gap_hours = float(signal.context.get("schedule_gap_hours", 0.0)) if signal.context else 0.0
+        
+        # Generate SPLIT_ITEM candidate for the first item
+        item_id = signal.affected_item_ids[0]
+        candidates.append(self._build_candidate(
+            action_type=RecommendationAction.SPLIT_ITEM,
+            title=f"Split item ({item_id})",
+            description=f"Split work item {item_id} to reduce schedule pressure",
+            affected_item_ids=[item_id],
+            affected_resource_ids=[],
+            affected_sprint_ids=signal.affected_sprint_ids,
+            affected_blocker_ids=signal.affected_blocker_ids,
+            root_signal_id=signal.signal_id,
+            simulation_params={"target_item_id": item_id},
+            feasibility_checks={"item_large_enough": True},
+        ))
+        
+        # Generate REBALANCE_SPRINT_LOAD candidate
+        candidates.append(self._build_candidate(
+            action_type=RecommendationAction.REBALANCE_SPRINT_LOAD,
+            title="Rebalance sprint load",
+            description=f"Rebalance work items across sprints to address schedule pressure (gap: {schedule_gap_hours:.1f}h)",
+            affected_item_ids=signal.affected_item_ids[:2],  # Top 2 items
+            affected_resource_ids=[],
+            affected_sprint_ids=signal.affected_sprint_ids,
+            affected_blocker_ids=signal.affected_blocker_ids,
+            root_signal_id=signal.signal_id,
+            simulation_params={"gap_hours": schedule_gap_hours},
+            feasibility_checks={"has_future_sprints": True},
+        ))
+        
+        # Generate ADD_RESOURCE_SKILL candidate when gap is large
+        if schedule_gap_hours > 20.0:
             candidates.append(self._build_candidate(
-                action_type=RecommendationAction.SPLIT_ITEM,
-                title=f"Split item ({item_id})",
-                description=f"Split work item {item_id} to reduce schedule pressure",
-                affected_item_ids=[item_id],
+                action_type=RecommendationAction.ADD_RESOURCE_SKILL,
+                title="Add resource capacity",
+                description=f"Add resources or increase capacity to close schedule gap ({schedule_gap_hours:.1f}h)",
+                affected_item_ids=signal.affected_item_ids[:1],
                 affected_resource_ids=[],
                 affected_sprint_ids=signal.affected_sprint_ids,
                 affected_blocker_ids=signal.affected_blocker_ids,
                 root_signal_id=signal.signal_id,
-                simulation_params={"target_item_id": item_id},
-                feasibility_checks={"item_large_enough": True},
+                simulation_params={"gap_hours": schedule_gap_hours},
+                feasibility_checks={"budget_available": True},
             ))
+        
         return candidates
 
     def _deduplicate(self, existing: Dict[str, RecommendationCandidate], new: RecommendationCandidate) -> None:

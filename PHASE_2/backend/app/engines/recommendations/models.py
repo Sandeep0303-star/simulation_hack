@@ -145,6 +145,8 @@ class BaselineMetrics:
     on_time_probability: float
     expected_delay_days: float
     overall_risk_score: float
+    schedule_risk: float
+    resource_risk: float
     critical_path_hours: float
 
 
@@ -153,6 +155,8 @@ class SimulatedMetrics:
     on_time_probability: float
     expected_delay_days: float
     overall_risk_score: float
+    schedule_risk: float
+    resource_risk: float
     critical_path_hours: float
 
 

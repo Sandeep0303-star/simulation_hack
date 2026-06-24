@@ -35,15 +35,44 @@ class ImpactEstimator:
         return estimator(candidate)
 
     def _estimate_resolve_blocker(self, candidate: RecommendationCandidate) -> ImpactEstimate:
-        blocked_hours = min(self.upstream.forecast.remaining_effort_hours, 24.0)
+        # Hours recovered: proportional share of remaining effort attributed to this one blocker.
+        # active_blocker_count guard ensures we never divide by zero.
+        active_blocker_count = max(self.upstream.metrics.active_blocker_count, 1)
+        blocker_velocity_impact = float(self.upstream.metrics.estimated_blocker_velocity_impact or 0.0)
+
+        # Each blocker's share of the compound velocity impact (simple even split across active blockers).
+        per_blocker_impact_share = blocker_velocity_impact / active_blocker_count
+
+        # Delay days recoverable by resolving this one blocker.
+        # Proportional to its share of the total blocker-induced velocity drag.
+        recoverable_delay_days = round(
+            self.upstream.forecast.expected_delay_days * per_blocker_impact_share, 2
+        )
+
+        # Hours recovered: same fraction of remaining effort.
+        blocked_hours = min(
+            self.upstream.forecast.remaining_effort_hours * per_blocker_impact_share,
+            self.upstream.forecast.remaining_effort_hours,
+        )
+
         return self._build_estimate(
             candidate,
             hours_recovered=blocked_hours,
-            delay_days=round(min(self.upstream.forecast.expected_delay_days, 2.0), 2),
-            risk_reduction=0.15,
+            delay_days=recoverable_delay_days,
+            risk_reduction=min(0.15 + per_blocker_impact_share, 0.40),
             confidence=ConfidenceLevel.HIGH,
-            evidence=[self._evidence("ForecastEngine", "remaining_effort_hours", self.upstream.forecast.remaining_effort_hours, 0.0, "Blocker resolution reduces remaining work")],
-            notes="Blocker resolution addresses active blocker pressure and reduces remaining work",
+            evidence=[self._evidence(
+                "MetricsEngine",
+                "estimated_blocker_velocity_impact",
+                blocker_velocity_impact,
+                0.0,
+                f"This blocker accounts for ~{round(per_blocker_impact_share * 100, 1)}% of total blocker velocity drag",
+            )],
+            notes=(
+                f"Resolving this blocker removes its share of the {round(blocker_velocity_impact * 100, 1)}% "
+                f"compound velocity reduction from {active_blocker_count} active blocker(s), "
+                f"recovering an estimated {recoverable_delay_days} days."
+            ),
         )
 
     def _estimate_reassign_item(self, candidate: RecommendationCandidate) -> ImpactEstimate:
