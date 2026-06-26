@@ -68,11 +68,8 @@ def _resolve_category(
     # Get first blocker
     first_blocker_id = affected_blocker_ids[0]
     for blocker in project_state.blockers:
-        if blocker.id == first_blocker_id:
-            return blocker.category
-    
-    return None
-
+        if blocker.blocker_id == first_blocker_id:
+            return blocker.category.value
 
 def _estimate_implementation_effort(
     action_type: RecommendationAction,
@@ -160,10 +157,11 @@ def _recommendation_to_summary(
     if rec.impact_evidence:
         impact_evidence = [
             {
-                "signal_id": sig.signal_id,
-                "signal_type": sig.signal_type.value,
-                "confidence": sig.confidence.value,
-                "details": sig.details,
+                "source_engine": sig.source_engine,
+                "metric_name": sig.metric_name,
+                "metric_value": sig.metric_value,
+                "threshold": sig.threshold,
+                "explanation": sig.explanation,
             }
             for sig in rec.impact_evidence
         ]

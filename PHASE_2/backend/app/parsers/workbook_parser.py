@@ -7,9 +7,12 @@ Structure: Row 1 = Title, Row 2 = Headers, Row 3+ = Data
 
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+import logging
 import openpyxl
 from openpyxl.worksheet.worksheet import Worksheet
 import uuid
+
+logger = logging.getLogger(__name__)
 
 from app.domain.models import (
     ProjectInfo,
@@ -76,7 +79,7 @@ class WorkbookParser:
     
     REQUIRED_SHEETS = [
         "Project_Info", "Team", "Sprint_Plan", "Work_Items",
-        "Dependencies", "Blockers", "Sprint_Actuals"
+        "Dependencies", "Blockers"
     ]
     
     def __init__(self, file_path: str):
@@ -105,11 +108,12 @@ class WorkbookParser:
             # Parse each sheet
             project_info = self._parse_project_info()
             team = self._parse_team()
-            sprints = self._parse_sprints()
+            sprint_plan_rows = self._get_sheet_data("Sprint_Plan")
+            sprints = self._parse_sprints(sprint_plan_rows)
             work_items = self._parse_work_items()
             dependencies = self._parse_dependencies()
             blockers = self._parse_blockers()
-            actuals = self._parse_sprint_actuals()
+            actuals = self._build_sprint_actuals(sprints, work_items, sprint_plan_rows)
             
             # Create and return ProjectState
             return ProjectState(
@@ -203,6 +207,9 @@ class WorkbookParser:
         resources = []
         
         for row in data_rows:
+            resource_name = row.get("Resource Name")
+            if not resource_name or str(resource_name).strip().lower().startswith("skill level"):
+                continue
             resource_name = self._get_str(row, "Resource Name")
             
             # Generate resource ID from name (use first name initials + last name)
@@ -212,19 +219,18 @@ class WorkbookParser:
                 resource_id=resource_id,
                 name=resource_name,
                 role=self._get_str(row, "Role"),
-                primary_skill=self._get_str(row, "Primary Skill"),
-                secondary_skill=self._get_optional_str(row, "Secondary Skill"),
-                skill_level=self._parse_skill_level(row),
-                allocation_pct=self._get_float(row, "Allocation %"),
-                availability_pct=self._get_float(row, "Availability %"),
+                primary_skill=self._get_str(row, "Skill 1"),
+                secondary_skill=self._get_optional_str(row, "Skill 2"),
+                skill_level=self._parse_skill_level(row, "Skill 1 Level"),
+                allocation_pct=self._average_pct_columns(row, "Alloc %"),
+                availability_pct=self._average_pct_columns(row, "Avail %"),
                 notes=self._get_optional_str(row, "Notes"),
             ))
         
         return resources
     
-    def _parse_sprints(self) -> List[Sprint]:
+    def _parse_sprints(self, data_rows: List[Dict[str, Any]]) -> List[Sprint]:
         """Parse Sprint_Plan sheet (multiple rows)."""
-        data_rows = self._get_sheet_data("Sprint_Plan")
         sprints = []
         sprint_number = 0
         
@@ -257,6 +263,222 @@ class WorkbookParser:
         
         return sprints
     
+    def _derive_carryover_metrics(
+        self,
+        work_items: List[WorkItem],
+        sprints: List[Sprint],
+    ) -> Dict[str, Dict[str, float]]:
+        """Derive historical carry-over metrics from work item planning history."""
+        sprint_by_name = {
+            self._normalize_sprint_name(sprint.sprint_name): sprint.sprint_id
+            for sprint in sprints
+        }
+        metrics = {
+            sprint.sprint_id: {
+                "carry_out_count": 0,
+                "carry_in_count": 0,
+                "carry_out_hours": 0.0,
+                "carry_in_hours": 0.0,
+            }
+            for sprint in sprints
+        }
+
+        for work_item in work_items:
+            original_sprint = self._normalize_sprint_name(work_item.original_sprint)
+            assigned_sprint = self._normalize_sprint_name(work_item.assigned_sprint)
+
+            if not original_sprint or not assigned_sprint:
+                continue
+
+            if original_sprint == assigned_sprint:
+                continue
+
+            if original_sprint not in sprint_by_name or assigned_sprint not in sprint_by_name:
+                continue
+
+            origin_id = sprint_by_name[original_sprint]
+            assigned_id = sprint_by_name[assigned_sprint]
+
+            metrics[origin_id]["carry_out_count"] += 1
+            metrics[origin_id]["carry_out_hours"] += work_item.current_estimate_hrs
+            metrics[assigned_id]["carry_in_count"] += 1
+            metrics[assigned_id]["carry_in_hours"] += work_item.current_estimate_hrs
+
+        return metrics
+
+    def _derive_sprint_history_metrics(
+        self,
+        work_items: List[WorkItem],
+        sprints: List[Sprint],
+    ) -> Dict[str, Dict[str, Any]]:
+        """Derive additional sprint history metrics from work items."""
+        carry_metrics = self._derive_carryover_metrics(work_items, sprints)
+        sprint_by_name = {
+            self._normalize_sprint_name(sprint.sprint_name): sprint.sprint_id
+            for sprint in sprints
+        }
+
+        metrics = {
+            sprint.sprint_id: {
+                "planned_items": 0,
+                "completed_items": 0,
+                "planned_hours": 0.0,
+                "actual_hours": 0.0,
+                "carry_out_count": carry_metrics[sprint.sprint_id]["carry_out_count"],
+                "carry_in_count": carry_metrics[sprint.sprint_id]["carry_in_count"],
+                "carry_out_hours": carry_metrics[sprint.sprint_id]["carry_out_hours"],
+                "carry_in_hours": carry_metrics[sprint.sprint_id]["carry_in_hours"],
+            }
+            for sprint in sprints
+        }
+
+        for work_item in work_items:
+            original_sprint = self._normalize_sprint_name(work_item.original_sprint)
+            assigned_sprint = self._normalize_sprint_name(work_item.assigned_sprint)
+
+            if original_sprint and original_sprint in sprint_by_name:
+                original_id = sprint_by_name[original_sprint]
+                metrics[original_id]["planned_items"] += 1
+                metrics[original_id]["planned_hours"] += work_item.estimated_effort_hrs
+
+            if assigned_sprint and assigned_sprint in sprint_by_name:
+                assigned_id = sprint_by_name[assigned_sprint]
+                metrics[assigned_id]["actual_hours"] += work_item.actual_effort_hrs
+                if work_item.status in {WorkItemStatus.DONE, WorkItemStatus.COMPLETED}:
+                    metrics[assigned_id]["completed_items"] += 1
+
+        for sprint_metrics in metrics.values():
+            sprint_metrics["completion_rate"] = (
+                sprint_metrics["completed_items"] / sprint_metrics["planned_items"]
+                if sprint_metrics["planned_items"]
+                else 0.0
+            )
+            sprint_metrics["velocity_ratio"] = (
+                sprint_metrics["actual_hours"] / sprint_metrics["planned_hours"]
+                if sprint_metrics["planned_hours"]
+                else 0.0
+            )
+            sprint_metrics["variance_hours"] = (
+                sprint_metrics["actual_hours"] - sprint_metrics["planned_hours"]
+            )
+
+        return metrics
+
+    def _build_sprint_actuals(
+        self,
+        sprints: List[Sprint],
+        work_items: List[WorkItem],
+        sprint_plan_rows: List[Dict[str, Any]],
+    ) -> List[SprintActual]:
+        """Build SprintActual objects using derived sprint history and optional actuals sheet data."""
+        sprint_metrics = self._derive_sprint_history_metrics(work_items, sprints)
+        plan_row_map = {
+            self._normalize_sprint_name(row.get("Sprint Name")): row
+            for row in sprint_plan_rows
+            if row.get("Sprint Name")
+        }
+        actual_rows = []
+        if "Sprint_Actuals" in self.workbook.sheetnames:
+            actual_rows = self._get_sheet_data("Sprint_Actuals")
+        actual_row_map = {
+            self._normalize_sprint_name(row.get("Sprint")): row
+            for row in actual_rows
+            if row.get("Sprint")
+        }
+
+        actuals = []
+        for sprint in sprints:
+            sprint_id = sprint.sprint_id
+            sprint_name = sprint.sprint_name
+            metrics = sprint_metrics[sprint_id]
+            plan_row = plan_row_map.get(self._normalize_sprint_name(sprint_name))
+            actual_row = actual_row_map.get(self._normalize_sprint_name(sprint_name))
+
+            planned_effort_hrs = (
+                self._get_float_safe(actual_row, "Planned Hours")
+                if actual_row and "Planned Hours" in actual_row
+                else metrics["planned_hours"]
+            )
+            actual_effort_hrs = (
+                self._get_float_safe(actual_row, "Actual Hours")
+                if actual_row and "Actual Hours" in actual_row
+                else metrics["actual_hours"]
+            )
+            variance_hrs = (
+                self._get_float_safe(actual_row, "Variance (h)")
+                if actual_row and "Variance (h)" in actual_row
+                else actual_effort_hrs - planned_effort_hrs
+            )
+            tasks_planned = (
+                int(actual_row["Tasks Planned"])
+                if actual_row and "Tasks Planned" in actual_row and actual_row["Tasks Planned"] is not None
+                else metrics["planned_items"]
+            )
+            tasks_completed = (
+                int(actual_row["Tasks Completed"])
+                if actual_row and "Tasks Completed" in actual_row and actual_row["Tasks Completed"] is not None
+                else metrics["completed_items"]
+            )
+            completion_rate = (
+                self._get_float_safe(actual_row, "Completion Rate")
+                if actual_row and "Completion Rate" in actual_row
+                else (
+                    tasks_completed / tasks_planned if tasks_planned else 0.0
+                )
+            )
+            completion_rate = min(max(completion_rate, 0.0), 1.0)
+            carry_out_count = metrics["carry_out_count"]
+            carry_in_count = metrics["carry_in_count"]
+            carry_out_hours = metrics["carry_out_hours"]
+            carry_in_hours = metrics["carry_in_hours"]
+
+            if plan_row and "Carry-Over Items" in plan_row:
+                try:
+                    sprint_plan_carry = int(plan_row["Carry-Over Items"] or 0)
+                except (ValueError, TypeError):
+                    sprint_plan_carry = 0
+
+                if sprint_plan_carry != carry_out_count:
+                    logger.warning(
+                        "\nWARNING\n\nSprint %s\n\nSprint_Plan carry-over = %s\n\nDerived carry-over = %s\n\nPlease verify workbook consistency.",
+                        sprint_name,
+                        sprint_plan_carry,
+                        carry_out_count,
+                    )
+
+            scope_change_hours = (
+                self._get_float_safe(actual_row, "Scope Change Hours")
+                if actual_row and "Scope Change Hours" in actual_row
+                else 0.0
+            )
+            blocker_impact_hrs = (
+                self._get_float_safe(actual_row, "Blocker Impact (h)")
+                if actual_row and "Blocker Impact (h)" in actual_row
+                else 0.0
+            )
+            notes = self._get_optional_str(actual_row, "Notes") if actual_row else None
+
+            actuals.append(SprintActual(
+                sprint_id=sprint_id,
+                sprint_number=sprint.sprint_number,
+                planned_effort_hrs=planned_effort_hrs,
+                actual_effort_hrs=actual_effort_hrs,
+                variance_hrs=variance_hrs,
+                tasks_planned=tasks_planned,
+                tasks_completed=tasks_completed,
+                completion_rate=completion_rate,
+                carryover_count=carry_out_count,
+                carry_out_count=carry_out_count,
+                carry_in_count=carry_in_count,
+                carry_out_hours=carry_out_hours,
+                carry_in_hours=carry_in_hours,
+                scope_change_hours=scope_change_hours,
+                blocker_impact_hrs=blocker_impact_hrs,
+                notes=notes,
+            ))
+
+        return actuals
+
     def _parse_work_items(self) -> List[WorkItem]:
         """Parse Work_Items sheet (multiple rows)."""
         data_rows = self._get_sheet_data("Work_Items")
@@ -272,6 +494,8 @@ class WorkbookParser:
             
             progress_pct = self._parse_progress_pct(row)
             current_estimate = self._get_float_safe(row, "Curr Est (h)")
+            original_estimate = self._get_float_safe(row, "Orig Est (h)")
+            estimated_effort = original_estimate if original_estimate > 0.0 else current_estimate
 
             work_items.append(WorkItem(
                 item_id=item_id,
@@ -284,7 +508,7 @@ class WorkbookParser:
                 assigned_resource=self._get_optional_str(row, "Owner"),
                 required_skill=self._get_str(row, "Required Skill"),
                 priority=self._parse_priority(row),
-                estimated_effort_hrs=self._get_float_safe(row, "Orig Est (h)"),
+                estimated_effort_hrs=estimated_effort,
                 current_estimate_hrs=current_estimate,
                 actual_effort_hrs=self._get_float_safe(row, "Actual Hrs"),
                 progress_pct=progress_pct,
@@ -335,12 +559,13 @@ class WorkbookParser:
         dependencies = []
         
         for row in data_rows:
+            successor_key = "Successor Task" if "Successor Task" in row else "Sucessor Task"
             dependencies.append(Dependency(
                 dependency_id=self._get_str(row, "Dep ID"),
                 predecessor_item_id=self._get_str(row, "Predecessor Task"),
-                successor_item_id=self._get_str(row, "Sucessor Task"),  # Note: typo in sheet
+                successor_item_id=self._get_str(row, successor_key),
                 dependency_type=self._parse_dependency_type(row),
-                is_on_critical_path=self._parse_yes_no(self._get_str(row, "Critical Path")),
+                is_on_critical_path=self._parse_yes_no(self._get_optional_str(row, "Critical Path")),
                 lag_days=self._get_int(row, "Lag Days"),
                 notes=self._get_optional_str(row, "Notes"),
             ))
@@ -504,22 +729,33 @@ class WorkbookParser:
         except (ValueError, TypeError):
             return None
     
-    def _parse_skill_level(self, row: Dict) -> SkillLevel:
+    def _parse_skill_level(self, row: Dict, column: str = "Skill Level") -> SkillLevel:
         """Parse skill level enum from row."""
-        value = self._get_str(row, "Skill Level")
-        # Map various spellings to enum
+        value = self._get_str(row, column)
+        normalized = value.split("-")[-1].strip().lower() if "-" in value else value.strip().lower()
         mapping = {
             "junior": SkillLevel.JUNIOR,
+            "beginner": SkillLevel.JUNIOR,
             "intermediate": SkillLevel.INTERMEDIATE,
             "mid": SkillLevel.MID,
             "senior": SkillLevel.SENIOR,
             "advanced": SkillLevel.ADVANCED,
             "expert": SkillLevel.EXPERT,
         }
-        key = value.lower()
-        if key not in mapping:
+        if normalized not in mapping:
             raise WorkbookParseError(f"Invalid skill level: {value}")
-        return mapping[key]
+        return mapping[normalized]
+
+    def _average_pct_columns(self, row: Dict, suffix: str) -> float:
+        """Average percentage values for columns with a given suffix."""
+        values = []
+        for col_name, value in row.items():
+            if col_name.endswith(suffix) and value is not None:
+                try:
+                    values.append(float(value))
+                except (ValueError, TypeError):
+                    continue
+        return sum(values) / len(values) if values else 0.0
     
     def _parse_work_item_type(self, row: Dict) -> WorkItemType:
         """Parse work item type enum from row."""
